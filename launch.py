@@ -38,11 +38,19 @@ def main():
     parser.add_argument("--runs-root", default=str(REPO_ROOT / "runs_v2"))
     args = parser.parse_args()
 
+    # mirror train.py's run-dir naming so the DONE-skip sees variant runs
+    variant = ""
+    for item in args.set:
+        key, _, value = item.partition("=")
+        if key == "variant":
+            variant = value
+
     jobs = []
     for algo in args.algo.split(","):
+        algo_label = f"{algo}-{variant}" if variant else algo
         for env in args.env.split(","):
             for seed in parse_seeds(args.seeds):
-                run_dir = Path(args.runs_root) / env / algo / f"seed{seed}"
+                run_dir = Path(args.runs_root) / env / algo_label / f"seed{seed}"
                 if is_done(run_dir):
                     print(f"skip (done): {algo} {env} seed{seed}")
                     continue

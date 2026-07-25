@@ -15,6 +15,9 @@ class Config:
     env_id: str = "Hopper-v5"
     seed: int = 0
     run_dir: str = ""
+    # suffix distinguishing config variants of the same algo (e.g. "r0.1" for a
+    # ratio-sweep arm); empty = canonical config. Affects run dir + W&B id.
+    variant: str = ""
 
     # environment
     env_kwargs: dict = field(default_factory=dict)

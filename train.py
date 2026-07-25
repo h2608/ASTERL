@@ -37,7 +37,8 @@ def main():
     if args.tb:
         cfg.tb = True
 
-    run_dir = Path(args.runs_root) / cfg.env_id / cfg.algo / f"seed{cfg.seed}"
+    algo_label = f"{cfg.algo}-{cfg.variant}" if cfg.variant else cfg.algo
+    run_dir = Path(args.runs_root) / cfg.env_id / algo_label / f"seed{cfg.seed}"
     run_dir.mkdir(parents=True, exist_ok=True)
     cfg.run_dir = str(run_dir)
     save_config(cfg, run_dir / "config.yaml")
