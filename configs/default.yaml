@@ -1,0 +1,12 @@
+# Values here override the Config dataclass defaults (asterl/common/config.py);
+# per-env files in configs/env/ override this; --set k=v overrides everything.
+
+# Paper-wide standardized budget (ERL-literature convention), replacing
+# TERL-main's inflated 2-8M per-env budgets. Long-horizon runs override via
+# --set max_timesteps=3000000.
+max_timesteps: 1000000
+
+# Project default: log to both W&B and TensorBoard (metrics.jsonl is always
+# written regardless). Override per run with --wandb disabled / offline.
+wandb_mode: online
+tb: true

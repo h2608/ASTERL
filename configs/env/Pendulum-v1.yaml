@@ -1,0 +1,3 @@
+# High-variance env: TERL-main averaged stable_eval_times episodes per fitness
+# evaluation for Pendulum/LunarLander (TERL.py:219-220)
+fitness_eval_times: 5

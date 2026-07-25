@@ -1,0 +1,18 @@
+[project]
+name = "asterl"
+version = "0.1.0"
+description = "Adaptive-TERL: adaptive scheduling for two-stage evolutionary reinforcement learning"
+requires-python = ">=3.10"
+dependencies = [
+    "torch",
+    "gymnasium[mujoco]",
+    "numpy",
+    "pyyaml",
+    "wandb",
+    "python-dotenv",
+    "tensorboard",
+]
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+testpaths = ["tests"]

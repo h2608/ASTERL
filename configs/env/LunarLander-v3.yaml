@@ -1,0 +1,5 @@
+# Continuous LunarLander (gymnasium >=1.0 registers LunarLander-v3 with a
+# `continuous` kwarg instead of a separate LunarLanderContinuous id)
+env_kwargs:
+  continuous: true
+fitness_eval_times: 5

@@ -1,0 +1,17 @@
+# secrets — never commit
+.env
+
+# run artifacts
+runs_v2/
+wandb/
+*.log
+
+# python
+__pycache__/
+*.pyc
+.venv/
+*.egg-info/
+.pytest_cache/
+
+# original paper's recorded data stays local (large binaries)
+TERL-main/learning_curves/
