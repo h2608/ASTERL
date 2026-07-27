@@ -10,7 +10,13 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1] / "runs_v2"
 ENVS = ["Hopper-v5", "HalfCheetah-v5", "Swimmer-v5"]
-ARMS = [("0.10", "terl-r0.1"), ("0.25", "terl"), ("0.50", "terl-r0.5"), ("0.75", "terl-r0.75")]
+ARMS = [
+    ("0.10", "terl-r0.1"),
+    ("0.25", "terl"),
+    ("0.50", "terl-r0.5"),
+    ("0.75", "terl-r0.75"),
+    ("SGSA", "aterl"),
+]
 MARKS = [500_000, 1_000_000]
 
 
