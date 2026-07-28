@@ -30,7 +30,10 @@ class ATERLTrainer(PopulationTrainerBase):
 
     def __init__(self, cfg, logger):
         super().__init__(cfg, logger)
-        self.tracker = SignalTracker(cfg.pop_size, cfg.window_k, cfg.improve_eps, cfg.s_max)
+        self.tracker = SignalTracker(
+            cfg.pop_size, cfg.window_k, cfg.improve_eps, cfg.s_max,
+            improve_decay=cfg.improve_decay, prog_gate=cfg.prog_gate,
+        )
         self.controller = make_controller(cfg)
 
     def _diversity(self):
@@ -91,6 +94,8 @@ class ATERLTrainer(PopulationTrainerBase):
         # -- logging -------------------------------------------------------
         metrics = {
             "controller/g_raw": plan.g_raw,
+            "controller/g_stag": plan.g_stag,
+            "controller/g_prog": plan.g_prog,
             "controller/g": plan.g,
             "controller/tau": plan.tau,
             "controller/pso_interval": plan.pso_interval,

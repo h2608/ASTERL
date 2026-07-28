@@ -54,6 +54,11 @@ class Config:
     kappa: float = 1.5
     d_min: float = 0.02
     improve_eps: float = 0.01
+    # v2 controller fixes (each independently disableable -> ablation arms;
+    # improve_decay=0.0, prog_gate=False, alpha_anneal=False recovers v1):
+    improve_decay: float = 0.5  # stagnation retained on global improvement (anti saw-tooth)
+    prog_gate: bool = True  # diminishing-marginal-return gate, max-combined with stagnation
+    alpha_anneal: bool = True  # alpha -> 1 as g -> 1 so g=1 collapses onto best fitness
     episodes_per_round: int = 10  # pop_size + 5, matches TERL's per-round episode cadence
     diversity_states: int = 512
 

@@ -27,6 +27,45 @@ def test_stagnation_gate():
     assert tracker.gate(1800) == 1.0
 
 
+def test_ratchet_retains_stagnation():
+    tracker = SignalTracker(pop_size=2, window_k=5, improve_eps=0.01, s_max=1000,
+                            improve_decay=0.5)
+    tracker.record_eval(0, 100.0, env_steps=0)
+    assert tracker.gate_stagnation(1000) == 1.0
+    # v1 (improve_decay=0) would reset the gate to 0 here; the ratchet
+    # retains half the accumulated stagnation per improvement
+    tracker.record_eval(1, 200.0, env_steps=1000)
+    assert tracker.gate_stagnation(1000) == 0.5
+    tracker.record_eval(0, 300.0, env_steps=1000)
+    assert tracker.gate_stagnation(1000) == 0.25
+
+
+def test_progress_gate_tracks_marginal_return():
+    tracker = SignalTracker(pop_size=1, window_k=5, improve_eps=0.01, s_max=500,
+                            prog_gate=True)
+
+    def run(fit_fn, lo, hi):
+        gates = []
+        for step in range(lo, hi + 1, 100):
+            tracker.record_eval(0, fit_fn(step), env_steps=step)
+            gates.append(tracker.gate_progress(step))
+        return gates
+
+    fast = run(lambda s: float(s), 0, 1000)  # +1 fitness / step
+    assert fast[-1] == 0.0  # improving at the run's own peak rate
+    slow = run(lambda s: 1000 + 0.05 * (s - 1000), 1100, 3000)
+    assert slow[-1] > 0.9  # marginal return collapsed -> concentrate
+    renewed = run(lambda s: 1100 + (s - 3000), 3100, 4000)
+    assert renewed[-1] < 0.2  # breakthrough re-opens exploration
+
+
+def test_progress_gate_off_by_default():
+    tracker = SignalTracker(pop_size=1, window_k=5, improve_eps=0.01, s_max=500)
+    for step in range(0, 3001, 100):
+        tracker.record_eval(0, 100.0, env_steps=step)
+    assert tracker.gate_progress(3000) == 0.0
+
+
 def test_deltas_measure_improvement():
     tracker = SignalTracker(pop_size=2, window_k=4, improve_eps=0.01, s_max=1000)
     for step, f in enumerate([1.0, 2.0, 3.0, 4.0]):
@@ -58,3 +97,5 @@ def test_tracker_state_roundtrip():
     assert clone.fitness_means() == tracker.fitness_means()
     assert clone.global_best == tracker.global_best
     assert clone.last_improve_step == tracker.last_improve_step
+    assert list(clone.curve) == list(tracker.curve)
+    assert clone.peak_delta == tracker.peak_delta

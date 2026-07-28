@@ -35,6 +35,28 @@ def test_softmax_collapses_at_g1():
     assert np.isclose(plan.probs.sum(), 1.0)
 
 
+def test_alpha_anneal_collapses_despite_bad_delta():
+    """The v1 failure: the best individual stagnates, so its delta-rank is
+    bottom and half the score mass shifts off it exactly at g=1 (observed
+    p_max ~0.8 instead of ~1). Annealing alpha -> 1 with g restores collapse."""
+    tracker = SignalTracker(5, window_k=5, improve_eps=0.01, s_max=50_000)
+    for t in range(3):
+        for i in range(4):
+            tracker.record_eval(i, 10.0 * i + t, env_steps=t)  # improving
+        tracker.record_eval(4, 50.0, env_steps=t)  # best but flat
+    tracker.last_improve_step = 0
+    steps = 10 * Config().s_max
+
+    plan = SGSAController(Config(pop_size=5)).plan(tracker, steps, diversity=None)
+    assert plan.g == 1.0
+    assert plan.probs[4] > 0.99
+
+    v1 = SGSAController(Config(pop_size=5, alpha_anneal=False)).plan(
+        tracker, steps, diversity=None
+    )
+    assert v1.probs[4] < 0.9  # mass leaks to the improvers
+
+
 def test_kappa_sharpens_gradient_weights():
     cfg = Config(pop_size=5, kappa=2.0)
     ctrl = SGSAController(cfg)

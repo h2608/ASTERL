@@ -14,6 +14,8 @@ class RoundPlan:
     grad_weights: np.ndarray  # gradient-step allocation (probs ** kappa, renormalized)
     pso_interval: float
     diversity: float | None
+    g_stag: float = 0.0  # stagnation component of g_raw
+    g_prog: float = 0.0  # diminishing-marginal-return component of g_raw
 
 
 class SGSAController:
@@ -38,7 +40,9 @@ class SGSAController:
 
     def plan(self, tracker, env_steps, diversity):
         cfg = self.cfg
-        g_raw = tracker.gate(env_steps)
+        g_stag = tracker.gate_stagnation(env_steps)
+        g_prog = tracker.gate_progress(env_steps)
+        g_raw = max(g_stag, g_prog)
 
         if diversity is not None:
             if diversity < cfg.d_min:
@@ -47,8 +51,13 @@ class SGSAController:
                 self.attenuation = min(1.0, self.attenuation * 1.5)
         g = g_raw * self.attenuation
 
+        # Anneal alpha -> 1 with g: at full concentration the score must be
+        # pure fitness rank, otherwise the delta term shifts mass off the best
+        # individual exactly when it stagnates (v1 never actually collapsed
+        # onto the best: p_max ~0.8 at g=1 instead of ~1).
+        alpha = cfg.alpha + (1.0 - cfg.alpha) * g if cfg.alpha_anneal else cfg.alpha
         fitness = tracker.fitness_means()
-        scores = cfg.alpha * rank_normalize(fitness) + (1 - cfg.alpha) * rank_normalize(
+        scores = alpha * rank_normalize(fitness) + (1 - alpha) * rank_normalize(
             tracker.deltas()
         )
         # +inf fitness (never-evaluated individual) outranks everything: force coverage
@@ -65,7 +74,9 @@ class SGSAController:
         weights /= weights.sum()
 
         pso_interval = 10.0 ** (4.0 - g)
-        return RoundPlan(g_raw, g, tau, probs, weights, pso_interval, diversity)
+        return RoundPlan(
+            g_raw, g, tau, probs, weights, pso_interval, diversity, g_stag, g_prog
+        )
 
     def state_dict(self):
         return {"attenuation": self.attenuation}
@@ -94,7 +105,9 @@ class FixedStageController:
             probs = np.zeros(cfg.pop_size)
             probs[int(np.argmax(finite))] = 1.0
         weights = probs.copy()
-        return RoundPlan(g, g, 0.0, probs, weights, 1e4 if g == 0.0 else 1e3, diversity)
+        return RoundPlan(
+            g, g, 0.0, probs, weights, 1e4 if g == 0.0 else 1e3, diversity, g, 0.0
+        )
 
     def state_dict(self):
         return {}
