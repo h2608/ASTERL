@@ -1,4 +1,5 @@
 import numpy as np
+import pytest
 import torch
 
 from asterl.algos.td3 import Actor
@@ -36,7 +37,7 @@ def test_ratchet_retains_stagnation():
     # retains half the accumulated stagnation per improvement
     tracker.record_eval(1, 200.0, env_steps=1000)
     assert tracker.gate_stagnation(1000) == 0.5
-    tracker.record_eval(0, 300.0, env_steps=1000)
+    tracker.record_eval(1, 400.0, env_steps=1000)  # window mean 300 > ref 200
     assert tracker.gate_stagnation(1000) == 0.25
 
 
@@ -57,6 +58,47 @@ def test_progress_gate_tracks_marginal_return():
     assert slow[-1] > 0.9  # marginal return collapsed -> concentrate
     renewed = run(lambda s: 1100 + (s - 3000), 3100, 4000)
     assert renewed[-1] < 0.2  # breakthrough re-opens exploration
+
+
+def test_first_eval_counts_as_improvement():
+    """A -inf reference plus a relative epsilon margin is nan and compares
+    False, so before the fix the very first fitness never reset the gate."""
+    tracker = SignalTracker(pop_size=2, window_k=5, improve_eps=0.01, s_max=1000)
+    _, improved = tracker.record_eval(0, 5.0, env_steps=100)
+    assert improved
+    assert tracker.gate_stagnation(100) == 0.0
+
+
+def test_micro_improvements_accumulate():
+    """Sub-epsilon gains measured against a moving best could never reset the
+    gate; against the fixed gate_ref they add up."""
+    tracker = SignalTracker(pop_size=1, window_k=1, improve_eps=0.01, s_max=1000)
+    tracker.record_eval(0, 100.0, env_steps=0)
+    resets = 0
+    for step, f in enumerate([100.5, 101.0, 101.5, 102.0], 1):
+        _, improved = tracker.record_eval(0, f, env_steps=step)
+        resets += improved
+    assert resets == 1  # cumulative +1.5 over ref=100 crosses eps=1% at 101.5
+
+
+def test_nan_fitness_raises():
+    tracker = SignalTracker(pop_size=1, window_k=5, improve_eps=0.01, s_max=1000)
+    with pytest.raises(ValueError):
+        tracker.record_eval(0, float("nan"), env_steps=0)
+
+
+def test_noise_spike_decays_from_progress_curve():
+    """One lucky episode must not permanently raise the progress reference:
+    the window mean absorbs it at 1/window_k and lets it decay back out."""
+    tracker = SignalTracker(pop_size=1, window_k=5, improve_eps=0.01, s_max=500,
+                            prog_gate=True)
+    for step in range(0, 2001, 100):
+        tracker.record_eval(0, 100.0, step)
+    tracker.record_eval(0, 200.0, 2100)  # single spike
+    assert tracker.curve[-1][1] == pytest.approx(120.0)
+    for step in range(2200, 2701, 100):
+        tracker.record_eval(0, 100.0, step)
+    assert tracker.curve[-1][1] == pytest.approx(100.0)  # spike left the window
 
 
 def test_progress_gate_off_by_default():
@@ -96,6 +138,7 @@ def test_tracker_state_roundtrip():
     clone.load_state_dict(tracker.state_dict())
     assert clone.fitness_means() == tracker.fitness_means()
     assert clone.global_best == tracker.global_best
+    assert clone.gate_ref == tracker.gate_ref
     assert clone.last_improve_step == tracker.last_improve_step
     assert list(clone.curve) == list(tracker.curve)
     assert clone.peak_delta == tracker.peak_delta
