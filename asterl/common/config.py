@@ -59,6 +59,11 @@ class Config:
     improve_decay: float = 0.5  # stagnation retained on global improvement (anti saw-tooth)
     prog_gate: bool = True  # diminishing-marginal-return gate, max-combined with stagnation
     alpha_anneal: bool = True  # alpha -> 1 as g -> 1 so g=1 collapses onto best fitness
+    # v3: minimum rollout share per individual (0.0 recovers v2). At g=1 the
+    # floored allocation is exactly TERL stage 2 (best 6/10, others 1/10):
+    # non-best rollouts are PSO-perturbed samplers around gbest that keep
+    # challenger fitness measurable while gradients concentrate unfloored.
+    rollout_floor: float = 0.1
     episodes_per_round: int = 10  # pop_size + 5, matches TERL's per-round episode cadence
     diversity_states: int = 512
 
@@ -74,6 +79,40 @@ def _parse_value(text):
         return ast.literal_eval(text)
     except (ValueError, SyntaxError):
         return text
+
+
+def algo_label(algo, variant):
+    """Run-dir / W&B naming: config variants of one algo must not collide."""
+    return f"{algo}-{variant}" if variant else algo
+
+
+def variant_from_overrides(overrides):
+    """The variant exactly as load_config will parse it — launch.py must map a
+    job to the same run dir train.py will use (a quoted value like
+    variant='"v3"' would otherwise resolve to two different directories)."""
+    value = ""
+    for item in overrides:
+        key, _, raw = item.partition("=")
+        if key == "variant":
+            value = _parse_value(raw)
+    return str(value)
+
+
+# Fields that do not change the training trajectory: safe to differ on resume.
+FINGERPRINT_EXCLUDE = {"run_dir", "wandb_mode", "wandb_project", "tb", "device",
+                       "checkpoint_freq"}
+
+
+def resume_mismatch(saved, cfg):
+    """Behavior-affecting config keys on which `cfg` differs from the config
+    recorded in a checkpoint (missing on either side counts as a difference)."""
+    current = {k: v for k, v in asdict(cfg).items() if k not in FINGERPRINT_EXCLUDE}
+    saved = {k: v for k, v in saved.items() if k not in FINGERPRINT_EXCLUDE}
+    missing = object()
+    return sorted(
+        k for k in set(current) | set(saved)
+        if current.get(k, missing) != saved.get(k, missing)
+    )
 
 
 def load_config(algo, env_id, seed, overrides=()):

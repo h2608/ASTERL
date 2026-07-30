@@ -1,7 +1,13 @@
 import numpy as np
+import pytest
 
+from asterl.algos.aterl import apportion
 from asterl.common.config import Config
-from asterl.controller.allocator import FixedStageController, SGSAController
+from asterl.controller.allocator import (
+    FixedStageController,
+    SGSAController,
+    make_controller,
+)
 from asterl.controller.signals import SignalTracker
 
 
@@ -25,7 +31,7 @@ def test_softmax_near_uniform_at_g0():
 
 
 def test_softmax_collapses_at_g1():
-    cfg = Config(pop_size=5)
+    cfg = Config(pop_size=5, rollout_floor=0.0)  # pure softmax, no floor
     ctrl = SGSAController(cfg)
     tracker = make_tracker([10.0, 20.0, 30.0, 40.0, 50.0])
     tracker.last_improve_step = 0
@@ -33,6 +39,25 @@ def test_softmax_collapses_at_g1():
     assert plan.g == 1.0
     assert plan.probs[4] > 0.99  # collapses onto the best individual
     assert np.isclose(plan.probs.sum(), 1.0)
+
+
+def test_rollout_floor_recovers_terl_stage2():
+    """g=1 with the default floor must reproduce TERL stage 2 exactly:
+    rollouts 6/1/1/1/1, gradients all to the best."""
+    cfg = Config(pop_size=5)  # defaults: rollout_floor=0.1, episodes_per_round=10
+    ctrl = SGSAController(cfg)
+    tracker = make_tracker([10.0, 20.0, 30.0, 40.0, 50.0])
+    tracker.last_improve_step = 0
+    plan = ctrl.plan(tracker, env_steps=10 * cfg.s_max, diversity=None)
+    assert plan.probs[4] == pytest.approx(0.6, abs=0.01)
+    assert np.all(plan.probs[:4] >= 0.1 - 1e-12)
+    assert plan.grad_weights[4] > 0.99  # gradients stay unfloored
+    assert list(apportion(plan.probs, cfg.episodes_per_round)) == [1, 1, 1, 1, 6]
+
+
+def test_infeasible_floor_rejected():
+    with pytest.raises(ValueError):
+        make_controller(Config(pop_size=5, rollout_floor=0.5))
 
 
 def test_alpha_anneal_collapses_despite_bad_delta():
@@ -47,11 +72,13 @@ def test_alpha_anneal_collapses_despite_bad_delta():
     tracker.last_improve_step = 0
     steps = 10 * Config().s_max
 
-    plan = SGSAController(Config(pop_size=5)).plan(tracker, steps, diversity=None)
+    plan = SGSAController(Config(pop_size=5, rollout_floor=0.0)).plan(
+        tracker, steps, diversity=None
+    )
     assert plan.g == 1.0
     assert plan.probs[4] > 0.99
 
-    v1 = SGSAController(Config(pop_size=5, alpha_anneal=False)).plan(
+    v1 = SGSAController(Config(pop_size=5, alpha_anneal=False, rollout_floor=0.0)).plan(
         tracker, steps, diversity=None
     )
     assert v1.probs[4] < 0.9  # mass leaks to the improvers
@@ -89,7 +116,9 @@ def test_unevaluated_individuals_get_top_score():
     assert plan.probs[2] >= plan.probs.max() - 1e-12
 
 
-def test_fixed_stage_recovers_terl_schedule():
+def test_fixed_stage_recovers_terl_schedule_endpoints():
+    """Endpoints only — switch time, PSO intervals, stage-2 rollout floor and
+    gradient concentration. The full TERL protocol lives in TERLTrainer."""
     cfg = Config(pop_size=5, ratio=0.25, max_timesteps=1_000_000)
     ctrl = FixedStageController(cfg)
     tracker = make_tracker([1.0, 2.0, 3.0, 4.0, 5.0])
@@ -99,5 +128,7 @@ def test_fixed_stage_recovers_terl_schedule():
     assert stage1.pso_interval == 1e4
     stage2 = ctrl.plan(tracker, env_steps=250_000, diversity=None)
     assert stage2.g == 1.0
-    assert stage2.probs[4] == 1.0
+    assert stage2.probs[4] == pytest.approx(0.6)  # TERL stage 2: 6/10 to the best
+    assert np.allclose(stage2.probs[:4], 0.1)  # 1/10 floor for challengers
+    assert stage2.grad_weights[4] == 1.0  # gradients all to the best
     assert stage2.pso_interval == 1e3

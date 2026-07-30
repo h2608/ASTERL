@@ -73,6 +73,17 @@ class SGSAController:
         weights = probs ** cfg.kappa
         weights /= weights.sum()
 
+        # Rollout floor (v3): every individual keeps >= rollout_floor of the
+        # episodes even at full concentration. g=1 then reproduces TERL stage 2
+        # exactly — best 6/10, others 1/10 with the defaults: the non-best
+        # members are PSO-perturbed samplers around gbest whose episodes keep
+        # challenger fitness measurable. v2 collapsed rollouts together with
+        # gradients, which starved that signal (the Swimmer regression).
+        # Gradient weights above are intentionally taken from the unfloored
+        # softmax so gradients still concentrate fully.
+        if cfg.rollout_floor > 0.0:
+            probs = cfg.rollout_floor + (1.0 - cfg.pop_size * cfg.rollout_floor) * probs
+
         pso_interval = 10.0 ** (4.0 - g)
         return RoundPlan(
             g_raw, g, tau, probs, weights, pso_interval, diversity, g_stag, g_prog
@@ -86,10 +97,14 @@ class SGSAController:
 
 
 class FixedStageController:
-    """Recovers TERL's hard two-stage schedule through the same interface:
-    g jumps 0 -> 1 at ratio * max_timesteps. Used for the fallback design
-    (adaptive hard switch = same class with a stagnation trigger) and as the
-    regression harness against the faithful TERL port."""
+    """TERL's hard two-stage schedule through the controller interface: g jumps
+    0 -> 1 at ratio * max_timesteps, recovering the schedule's endpoints —
+    switch time, PSO intervals (1e4/1e3), stage-2 gradient concentration, and
+    (via the rollout floor) the stage-2 6/1/1/1/1 episode split. It is NOT the
+    complete TERL algorithm: the stage-1 extra_idx heuristic (uniform episodes
+    here), per-rollout gradient attribution, and the fitness-eval early break
+    live only in the faithful TERLTrainer port. Basis of the fallback design
+    (adaptive hard switch = this schedule with a stagnation trigger)."""
 
     def __init__(self, cfg):
         self.cfg = cfg
@@ -101,10 +116,15 @@ class FixedStageController:
         finite = [f if not np.isinf(f) else -np.inf for f in fitness]
         if g == 0.0:
             probs = np.full(cfg.pop_size, 1.0 / cfg.pop_size)
+            weights = probs.copy()
         else:
-            probs = np.zeros(cfg.pop_size)
-            probs[int(np.argmax(finite))] = 1.0
-        weights = probs.copy()
+            weights = np.zeros(cfg.pop_size)
+            weights[int(np.argmax(finite))] = 1.0
+            probs = weights
+            if cfg.rollout_floor > 0.0:
+                probs = cfg.rollout_floor + (
+                    1.0 - cfg.pop_size * cfg.rollout_floor
+                ) * weights
         return RoundPlan(
             g, g, 0.0, probs, weights, 1e4 if g == 0.0 else 1e3, diversity, g, 0.0
         )
@@ -117,6 +137,11 @@ class FixedStageController:
 
 
 def make_controller(cfg):
+    if not 0.0 <= cfg.rollout_floor * cfg.pop_size <= 1.0:
+        raise ValueError(
+            f"rollout_floor={cfg.rollout_floor} infeasible for pop_size={cfg.pop_size}: "
+            "the floors must sum to at most 1"
+        )
     if cfg.allocator == "softmax":
         return SGSAController(cfg)
     if cfg.allocator == "fixed":

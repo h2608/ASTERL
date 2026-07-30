@@ -44,41 +44,60 @@ class ATERLTrainer(PopulationTrainerBase):
             [ind.actor for ind in self.pop], states, self.max_action
         )
 
+    def _update_champion(self, i, g):
+        """TERL's champion protocol: in the concentrated regime a new fitness
+        record must be confirmed with stable_eval_times noise-free episodes
+        (stored in the buffer and counted toward the budget, exactly as in
+        TERL stage 2) before the actor overwrites the test individual."""
+        cfg, st = self.cfg, self.state
+        if g > 0.5 and cfg.stable_eval_times > 1 and cfg.fitness_eval_times == 1:
+            stable = 0.0
+            for _ in range(cfg.stable_eval_times):
+                stable += self.collect_episode(i, noise=False) / cfg.stable_eval_times
+            if stable > st.test_individual_fitness:
+                st.test_individual_fitness = stable
+                copy_params(self.pop[i].actor, self.test_individual)
+        else:
+            copy_params(self.pop[i].actor, self.test_individual)
+
     def train_round(self):
         cfg = self.cfg
         st = self.state
 
         diversity = self._diversity()
         plan = self.controller.plan(self.tracker, self.timesteps, diversity)
+        best_idx_pre = st.best_idx
 
-        # -- rollouts sampled from the allocation ------------------------
-        idx_list = np.random.choice(cfg.pop_size, size=cfg.episodes_per_round, p=plan.probs)
+        # -- rollouts: deterministic largest-remainder split of the round's
+        # episodes by the (floored) allocation. Multinomial sampling could
+        # starve an individual of episodes for many rounds, leaving stale
+        # fitness estimates in the ranking.
+        episode_counts = apportion(plan.probs, cfg.episodes_per_round)
         steps_before = self.timesteps
-        for i in idx_list:
-            fitness = self.collect_episode(i, noise=True)
-            personal, global_improved = self.tracker.record_eval(i, fitness, self.timesteps)
-            if personal:
-                # TERL's protective reset: an improving individual is spared
-                # the next PSO pull toward gbest.
-                st.learned_steps[i] = 0
-                st.last_evo_point[i] = 0
-                self.logger.log({f"fitness/{i}": fitness}, self.timesteps)
-            if global_improved:
-                copy_params(self.pop[i].actor, self.test_individual)
+        for i in range(cfg.pop_size):
+            for _ in range(episode_counts[i]):
+                fitness = self.collect_episode(i, noise=True)
+                personal, _ = self.tracker.record_eval(i, fitness, self.timesteps)
+                if personal:
+                    # TERL's protective reset: an improving individual is spared
+                    # the next PSO pull toward gbest.
+                    st.learned_steps[i] = 0
+                    st.last_evo_point[i] = 0
+                    self.logger.log({f"fitness/{i}": fitness}, self.timesteps)
+                if self.tracker.personal_best[i] > st.max_best_f:
+                    st.max_best_f = self.tracker.personal_best[i]
+                    self._update_champion(i, plan.g)
 
-        # -- best-individual bookkeeping ---------------------------------
+        # -- best-individual bookkeeping: the designation follows the rank
+        # leader. No actor overwrite — copying the challenger's actor and
+        # fitness history into the incumbent slot created two identical
+        # top-ranked slots whose tied ranks split the softmax ~0.5/0.5
+        # exactly at g=1, defeating the alpha-anneal collapse.
         means = self.tracker.fitness_means()
         finite = [m if np.isfinite(m) else -np.inf for m in means]
         cand = int(np.argmax(finite))
-        if cand != st.best_idx and np.isfinite(finite[cand]):
-            if plan.g > 0.5:
-                # Concentrated regime: the challenger's actor overwrites the
-                # incumbent learner (which keeps its critics), as in TERL stage 2.
-                copy_params(self.pop[cand].actor, self.pop[st.best_idx].actor)
-                self.tracker.hist[st.best_idx] = self.tracker.hist[cand].copy()
-                self.tracker.personal_best[st.best_idx] = self.tracker.personal_best[cand]
-            else:
-                st.best_idx = cand
+        if np.isfinite(finite[cand]):
+            st.best_idx = cand
 
         # -- gradient allocation -----------------------------------------
         round_steps = self.timesteps - steps_before
@@ -99,7 +118,11 @@ class ATERLTrainer(PopulationTrainerBase):
             "controller/g": plan.g,
             "controller/tau": plan.tau,
             "controller/pso_interval": plan.pso_interval,
-            "controller/best_idx": st.best_idx,
+            # controller/* is the plan-time snapshot (the state the probs were
+            # built from); post-round population state is logged separately so
+            # one record never mixes the two.
+            "controller/best_idx": best_idx_pre,
+            "population/best_idx": st.best_idx,
         }
         if diversity is not None:
             metrics["controller/diversity"] = diversity
@@ -113,7 +136,7 @@ class ATERLTrainer(PopulationTrainerBase):
         for i in range(cfg.pop_size):
             metrics[f"controller/p_{i}"] = plan.probs[i]
             if np.isfinite(finite[i]):
-                metrics[f"controller/fitness_mean_{i}"] = finite[i]
+                metrics[f"population/fitness_mean_{i}"] = finite[i]
         self.logger.log(metrics, self.timesteps)
 
         self.maybe_test()
