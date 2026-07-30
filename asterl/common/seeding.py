@@ -11,17 +11,26 @@ def seed_everything(seed):
 
 
 def get_rng_state():
-    return {
+    state = {
         "python": random.getstate(),
         "numpy": np.random.get_state(),
         "torch": torch.get_rng_state(),
     }
+    if torch.cuda.is_available():
+        # GPU kernels (rand_like in the PSO pull, TD3 target noise) draw from
+        # this stream: without it a resumed GPU run diverges from the
+        # uninterrupted one. (Bit-exact GPU resume additionally requires
+        # deterministic kernels; this removes the RNG divergence.)
+        state["torch_cuda"] = torch.cuda.get_rng_state_all()
+    return state
 
 
 def set_rng_state(state):
     random.setstate(state["python"])
     np.random.set_state(state["numpy"])
     torch.set_rng_state(state["torch"])
+    if torch.cuda.is_available() and "torch_cuda" in state:
+        torch.cuda.set_rng_state_all(state["torch_cuda"])
 
 
 def get_env_rng_state(env):

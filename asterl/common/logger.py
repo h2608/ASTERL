@@ -4,7 +4,7 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 
-from asterl.common.config import REPO_ROOT
+from asterl.common.config import REPO_ROOT, algo_label
 
 
 class RunLogger:
@@ -25,16 +25,16 @@ class RunLogger:
             load_dotenv(REPO_ROOT / ".env")
             import wandb
 
-            algo_label = f"{cfg.algo}-{cfg.variant}" if cfg.variant else cfg.algo
+            label = algo_label(cfg.algo, cfg.variant)
             self._wandb = wandb.init(
                 project=cfg.wandb_project,
-                name=f"{cfg.env_id}__{algo_label}__s{cfg.seed}",
-                group=f"{algo_label}/{cfg.env_id}",
+                name=f"{cfg.env_id}__{label}__s{cfg.seed}",
+                group=f"{label}/{cfg.env_id}",
                 config=asdict(cfg),
                 mode=cfg.wandb_mode,
                 dir=str(self.run_dir),
                 resume="allow",
-                id=f"{cfg.env_id}-{algo_label}-s{cfg.seed}".replace("/", "-"),
+                id=f"{cfg.env_id}-{label}-s{cfg.seed}".replace("/", "-"),
             )
 
         self._tb = None

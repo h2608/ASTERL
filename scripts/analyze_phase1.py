@@ -22,11 +22,13 @@ MARKS = [500_000, 1_000_000]
 
 
 def scores_at(run_dir, mark):
-    """Last test_score logged at or before `mark` env steps."""
+    """Last test_score logged at or before `mark` env steps. Ties on step keep
+    the LAST record: after a crash-resume the replayed range is authoritative,
+    not the orphaned pre-crash rows."""
     best_step, score = -1, None
     for line in (run_dir / "metrics.jsonl").open():
         rec = json.loads(line)
-        if "test_score" in rec and best_step < rec["step"] <= mark:
+        if "test_score" in rec and best_step <= rec["step"] <= mark:
             best_step, score = rec["step"], rec["test_score"]
     return score
 

@@ -1,3 +1,5 @@
+from dataclasses import asdict
+
 import torch
 
 from asterl.algos.td3 import TD3
@@ -81,6 +83,7 @@ class TD3Trainer:
 
     def state_dict(self):
         return {
+            "config": asdict(self.cfg),
             "timesteps": self.timesteps,
             "last_test_point": self.last_test_point,
             "policy": self.policy.state_dict(),

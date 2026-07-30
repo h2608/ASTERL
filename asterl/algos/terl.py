@@ -1,4 +1,4 @@
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 
 import numpy as np
 import torch
@@ -170,6 +170,9 @@ class PopulationTrainerBase:
 
     def state_dict(self):
         return {
+            # config record: resume refuses to continue under different
+            # behavior-affecting settings (see config.resume_mismatch)
+            "config": asdict(self.cfg),
             "timesteps": self.timesteps,
             "num_games": self.num_games,
             "pop_state": vars(self.state).copy(),

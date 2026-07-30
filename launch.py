@@ -17,7 +17,7 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 from asterl.common.checkpoint import is_done
-from asterl.common.config import REPO_ROOT
+from asterl.common.config import REPO_ROOT, algo_label, variant_from_overrides
 
 
 def parse_seeds(text):
@@ -38,19 +38,16 @@ def main():
     parser.add_argument("--runs-root", default=str(REPO_ROOT / "runs_v2"))
     args = parser.parse_args()
 
-    # mirror train.py's run-dir naming so the DONE-skip sees variant runs
-    variant = ""
-    for item in args.set:
-        key, _, value = item.partition("=")
-        if key == "variant":
-            variant = value
+    # mirror train.py's run-dir naming (same parser) so the DONE-skip sees
+    # exactly the directory train.py will use
+    variant = variant_from_overrides(args.set)
 
     jobs = []
     for algo in args.algo.split(","):
-        algo_label = f"{algo}-{variant}" if variant else algo
+        label = algo_label(algo, variant)
         for env in args.env.split(","):
             for seed in parse_seeds(args.seeds):
-                run_dir = Path(args.runs_root) / env / algo_label / f"seed{seed}"
+                run_dir = Path(args.runs_root) / env / label / f"seed{seed}"
                 if is_done(run_dir):
                     print(f"skip (done): {algo} {env} seed{seed}")
                     continue
