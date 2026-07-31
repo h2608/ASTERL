@@ -64,6 +64,13 @@ class Config:
     # non-best rollouts are PSO-perturbed samplers around gbest that keep
     # challenger fitness measurable while gradients concentrate unfloored.
     rollout_floor: float = 0.1
+    # v4: in the concentrated regime (g > 0.5) a rank-leading challenger
+    # donates its actor into the incumbent best slot (TERL's stage-2 overwrite:
+    # the continuously-trained critic and optimizer stay put, so the gradient
+    # budget never lands on a gradient-starved learner) and the two slots swap
+    # fitness histories so exactly one slot ranks top. False recovers v3's
+    # free-moving best_idx (churn: 7-67 redirections/run at g > 0.5).
+    swap_overwrite: bool = True
     episodes_per_round: int = 10  # pop_size + 5, matches TERL's per-round episode cadence
     diversity_states: int = 512
 

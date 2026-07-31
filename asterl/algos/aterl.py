@@ -60,6 +60,51 @@ class ATERLTrainer(PopulationTrainerBase):
         else:
             copy_params(self.pop[i].actor, self.test_individual)
 
+    def _designate_best(self, g):
+        """Best-slot bookkeeping after the round's evaluations.
+
+        Open regime (g <= 0.5): the designation simply follows the rank
+        leader — slots keep their own records and learners.
+
+        Concentrated regime (g > 0.5): the entire gradient budget rides on
+        best_idx, so *moving* the designation lands it on a learner whose
+        critic was gradient-starved at the floor (v3's best-slot churn:
+        7-67 moves/run at g > 0.5, versus zero in TERL stage 2, where one
+        critic trains continuously and challengers donate actor weights
+        only). So instead of moving, a strictly leading challenger donates
+        its actor into the incumbent slot — critic and optimizer continuity
+        intact — and the two slots swap fitness histories, keeping exactly
+        one top-ranked slot (a copied history would tie the softmax ~0.5/0.5
+        at g=1, defeating the alpha-anneal collapse).
+
+        The swap trigger is a strict window-mean lead, NOT TERL's all-time-
+        record criterion: at g=1 the allocator's gradient one-hot follows the
+        window-mean rank leader, so refusing a swap while a challenger leads
+        would land the gradient budget on that starved challenger next round
+        anyway. The looser trigger is the price of keeping "rank leader" and
+        "continuously-trained slot" the same slot; population/swap logs the
+        resulting overwrite rate (a documented semantic gap vs TERL stage 2).
+
+        Returns 1.0 if a swap-overwrite happened (logged: best_idx alone
+        cannot show swaps precisely because they keep it constant)."""
+        cfg, st = self.cfg, self.state
+        means = self.tracker.fitness_means()
+        finite = [m if np.isfinite(m) else -np.inf for m in means]
+        cand = int(np.argmax(finite))
+        if not np.isfinite(finite[cand]) or cand == st.best_idx:
+            return 0.0
+        # An incumbent with no finite record cannot anchor a swap (unreachable
+        # with rollout_floor > 0, which evaluates every slot each round; kept
+        # for rollout_floor=0 ablation arms where apportion can starve a slot).
+        if cfg.swap_overwrite and g > 0.5 and np.isfinite(finite[st.best_idx]):
+            if finite[cand] > finite[st.best_idx]:
+                copy_params(self.pop[cand].actor, self.pop[st.best_idx].actor)
+                self.tracker.swap_slots(cand, st.best_idx)
+                return 1.0
+            return 0.0
+        st.best_idx = cand
+        return 0.0
+
     def train_round(self):
         cfg = self.cfg
         st = self.state
@@ -88,16 +133,7 @@ class ATERLTrainer(PopulationTrainerBase):
                     st.max_best_f = self.tracker.personal_best[i]
                     self._update_champion(i, plan.g)
 
-        # -- best-individual bookkeeping: the designation follows the rank
-        # leader. No actor overwrite — copying the challenger's actor and
-        # fitness history into the incumbent slot created two identical
-        # top-ranked slots whose tied ranks split the softmax ~0.5/0.5
-        # exactly at g=1, defeating the alpha-anneal collapse.
-        means = self.tracker.fitness_means()
-        finite = [m if np.isfinite(m) else -np.inf for m in means]
-        cand = int(np.argmax(finite))
-        if np.isfinite(finite[cand]):
-            st.best_idx = cand
+        swapped = self._designate_best(plan.g)
 
         # -- gradient allocation -----------------------------------------
         round_steps = self.timesteps - steps_before
@@ -123,6 +159,7 @@ class ATERLTrainer(PopulationTrainerBase):
             # one record never mixes the two.
             "controller/best_idx": best_idx_pre,
             "population/best_idx": st.best_idx,
+            "population/swap": swapped,
         }
         if diversity is not None:
             metrics["controller/diversity"] = diversity
@@ -133,10 +170,12 @@ class ATERLTrainer(PopulationTrainerBase):
                     for j in range(i + 1, cfg.pop_size)
                 ]
             )
+        # post-round (hence post-swap) per-slot means, matching population/*
+        means = self.tracker.fitness_means()
         for i in range(cfg.pop_size):
             metrics[f"controller/p_{i}"] = plan.probs[i]
-            if np.isfinite(finite[i]):
-                metrics[f"population/fitness_mean_{i}"] = finite[i]
+            if np.isfinite(means[i]):
+                metrics[f"population/fitness_mean_{i}"] = means[i]
         self.logger.log(metrics, self.timesteps)
 
         self.maybe_test()

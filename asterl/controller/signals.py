@@ -111,6 +111,20 @@ class SignalTracker:
     def gate(self, env_steps):
         return max(self.gate_stagnation(env_steps), self.gate_progress(env_steps))
 
+    def swap_slots(self, i, j):
+        """Exchange the per-slot records of individuals i and j (the v4
+        swap-overwrite: the incumbent best slot takes over a challenger's
+        actor weights together with its fitness record). A swap — not a copy:
+        duplicating the record put two identical top-ranked slots into the
+        softmax, whose tied ranks split ~0.5/0.5 exactly at g=1. Global gate
+        state (gate_ref, stagnation clock, progress curve, global_best) is
+        permutation-invariant and untouched."""
+        self.hist[i], self.hist[j] = self.hist[j], self.hist[i]
+        self.personal_best[i], self.personal_best[j] = (
+            self.personal_best[j],
+            self.personal_best[i],
+        )
+
     def fitness_means(self):
         # Unevaluated individuals get +inf: optimism under uncertainty forces
         # initial coverage of the whole population.

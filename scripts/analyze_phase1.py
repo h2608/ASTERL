@@ -18,6 +18,7 @@ ARMS = [
     ("SGSA", "aterl"),
     ("SGSA2", "aterl-v2"),
     ("SGSA3", "aterl-v3"),
+    ("SGSA4", "aterl-v4"),
 ]
 MARKS = [500_000, 1_000_000]
 

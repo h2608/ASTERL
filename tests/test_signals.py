@@ -1,3 +1,5 @@
+import copy
+
 import numpy as np
 import pytest
 import torch
@@ -128,6 +130,31 @@ def test_diversity_zero_for_identical_actors():
     a3 = Actor(3, 2, 1.0)
     d = behavioral_diversity([a1, a3], states, 1.0)
     assert 0.0 < d <= 1.0
+
+
+def test_swap_slots_exchanges_records_only():
+    """v4 swap-overwrite: per-slot records exchange, global gate state does
+    not (max-over-slots statistics are permutation-invariant, so a swap must
+    never perturb the stagnation clock or the progress curve)."""
+    tracker = SignalTracker(pop_size=3, window_k=3, improve_eps=0.01, s_max=1000,
+                            prog_gate=True)
+    for step, f in enumerate([10.0, 20.0], 1):
+        tracker.record_eval(0, f, env_steps=100 * step)
+    for step, f in enumerate([50.0, 60.0], 3):
+        tracker.record_eval(2, f, env_steps=100 * step)
+    gate_state = copy.deepcopy(
+        (tracker.gate_ref, tracker.last_improve_step, list(tracker.curve),
+         tracker.peak_delta, tracker.global_best)
+    )
+    tracker.swap_slots(2, 0)
+    assert list(tracker.hist[0]) == [50.0, 60.0]
+    assert list(tracker.hist[2]) == [10.0, 20.0]
+    assert tracker.personal_best[0] == 60.0
+    assert tracker.personal_best[2] == 20.0
+    means = tracker.fitness_means()
+    assert means[0] == 55.0 and means[2] == 15.0
+    assert (tracker.gate_ref, tracker.last_improve_step, list(tracker.curve),
+            tracker.peak_delta, tracker.global_best) == gate_state
 
 
 def test_tracker_state_roundtrip():
