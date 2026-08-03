@@ -16,6 +16,10 @@ class RoundPlan:
     diversity: float | None
     g_stag: float = 0.0  # stagnation component of g_raw
     g_prog: float = 0.0  # diminishing-marginal-return component of g_raw
+    # Hysteretic regime bit: True between g crossing gate_enter upward and
+    # gate_exit downward. Drives designation pinning, record-gated succession
+    # and the champion protocol — not the (continuous) tau/PSO schedules.
+    concentrated: bool = False
 
 
 class SGSAController:
@@ -30,15 +34,20 @@ class SGSAController:
       - PSO pull interval:    10 ** (4 - g) learned steps, interpolating TERL's
         own hand-set endpoints (1e4 stage 1, 1e3 stage 2)
 
-    A diversity floor attenuates g when behavioral diversity collapses, letting
-    the controller re-open exploration — something no fixed ratio can do.
+    A diversity floor attenuates g when behavioral diversity collapses,
+    re-opening the graded allocation. Note the concentrated-regime *bit* is
+    hysteretic (gate_enter/gate_exit), so one attenuation halving from g=1
+    lands inside the band and does not exit the regime — sustained collapse
+    does. (Empirically the floor fired in 1/30 formal runs; treat the
+    re-opening claim accordingly.)
     """
 
     def __init__(self, cfg):
         self.cfg = cfg
         self.attenuation = 1.0
+        self.concentrated = False
 
-    def plan(self, tracker, env_steps, diversity):
+    def plan(self, tracker, env_steps, diversity, best_idx):
         cfg = self.cfg
         g_stag = tracker.gate_stagnation(env_steps)
         g_prog = tracker.gate_progress(env_steps)
@@ -50,6 +59,14 @@ class SGSAController:
             else:
                 self.attenuation = min(1.0, self.attenuation * 1.5)
         g = g_raw * self.attenuation
+
+        # Hysteretic regime boundary: a memoryless g > 0.5 check would flap
+        # the regime (and with it succession semantics) on gate noise.
+        if self.concentrated:
+            if g < cfg.gate_exit:
+                self.concentrated = False
+        elif g > cfg.gate_enter:
+            self.concentrated = True
 
         # Anneal alpha -> 1 with g: at full concentration the score must be
         # pure fitness rank, otherwise the delta term shifts mass off the best
@@ -64,6 +81,18 @@ class SGSAController:
         for i, f in enumerate(fitness):
             if np.isinf(f):
                 scores[i] = 1.0
+
+        # Pinned concentrated regime: allocation rides the DESIGNATED slot, as
+        # TERL stage 2 rides best_idx — promote it a full adjacent-rank gap
+        # above the top score (an *exchange* with the argmax would split the
+        # budget ~0.5/0.5 whenever the max is not unique, e.g. tied window
+        # means or two unevaluated slots under rollout_floor=0). Routing
+        # concentration through the instantaneous window-mean ranking instead
+        # (v1-v4) re-targets the budget at noise frequency on plateaus, which
+        # is what kept the concentrated regime from ever matching TERL stage 2
+        # on Swimmer. The swap/free ablation arms keep the raw ranking.
+        if self.concentrated and cfg.concentration == "pinned":
+            scores[best_idx] = scores.max() + 0.25
 
         tau = cfg.tau_max - g * (cfg.tau_max - cfg.tau_min)
         logits = (scores - scores.max()) / tau
@@ -86,21 +115,24 @@ class SGSAController:
 
         pso_interval = 10.0 ** (4.0 - g)
         return RoundPlan(
-            g_raw, g, tau, probs, weights, pso_interval, diversity, g_stag, g_prog
+            g_raw, g, tau, probs, weights, pso_interval, diversity, g_stag, g_prog,
+            concentrated=self.concentrated,
         )
 
     def state_dict(self):
-        return {"attenuation": self.attenuation}
+        return {"attenuation": self.attenuation, "concentrated": self.concentrated}
 
     def load_state_dict(self, d):
         self.attenuation = d["attenuation"]
+        self.concentrated = d.get("concentrated", False)
 
 
 class FixedStageController:
     """TERL's hard two-stage schedule through the controller interface: g jumps
     0 -> 1 at ratio * max_timesteps, recovering the schedule's endpoints —
-    switch time, PSO intervals (1e4/1e3), stage-2 gradient concentration, and
-    (via the rollout floor) the stage-2 6/1/1/1/1 episode split. It is NOT the
+    switch time, PSO intervals (1e4/1e3), stage-2 gradient concentration on
+    the designated best slot, and (via the rollout floor) the stage-2
+    6/1/1/1/1 episode split. It is NOT the
     complete TERL algorithm: the stage-1 extra_idx heuristic (uniform episodes
     here), per-rollout gradient attribution, and the fitness-eval early break
     live only in the faithful TERLTrainer port. Basis of the fallback design
@@ -109,24 +141,25 @@ class FixedStageController:
     def __init__(self, cfg):
         self.cfg = cfg
 
-    def plan(self, tracker, env_steps, diversity):
+    def plan(self, tracker, env_steps, diversity, best_idx):
         cfg = self.cfg
         g = 1.0 if env_steps >= cfg.max_timesteps * cfg.ratio else 0.0
-        fitness = tracker.fitness_means()
-        finite = [f if not np.isinf(f) else -np.inf for f in fitness]
         if g == 0.0:
             probs = np.full(cfg.pop_size, 1.0 / cfg.pop_size)
             weights = probs.copy()
         else:
+            # Stage 2 rides the designated slot, as TERL rides best_idx —
+            # not the instantaneous fitness argmax.
             weights = np.zeros(cfg.pop_size)
-            weights[int(np.argmax(finite))] = 1.0
+            weights[best_idx] = 1.0
             probs = weights
             if cfg.rollout_floor > 0.0:
                 probs = cfg.rollout_floor + (
                     1.0 - cfg.pop_size * cfg.rollout_floor
                 ) * weights
         return RoundPlan(
-            g, g, 0.0, probs, weights, 1e4 if g == 0.0 else 1e3, diversity, g, 0.0
+            g, g, 0.0, probs, weights, 1e4 if g == 0.0 else 1e3, diversity, g, 0.0,
+            concentrated=g == 1.0,
         )
 
     def state_dict(self):
@@ -141,6 +174,16 @@ def make_controller(cfg):
         raise ValueError(
             f"rollout_floor={cfg.rollout_floor} infeasible for pop_size={cfg.pop_size}: "
             "the floors must sum to at most 1"
+        )
+    if cfg.concentration not in ("pinned", "swap", "free"):
+        raise ValueError(
+            f"Unknown concentration {cfg.concentration!r} (pinned | swap | free)"
+        )
+    if not 0.0 <= cfg.gate_exit <= cfg.gate_enter <= 1.0:
+        raise ValueError(
+            f"need 0 <= gate_exit ({cfg.gate_exit}) <= gate_enter "
+            f"({cfg.gate_enter}) <= 1: g lives in [0, 1], so thresholds "
+            "outside it silently freeze the regime"
         )
     if cfg.allocator == "softmax":
         return SGSAController(cfg)

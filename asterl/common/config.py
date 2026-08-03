@@ -64,13 +64,26 @@ class Config:
     # non-best rollouts are PSO-perturbed samplers around gbest that keep
     # challenger fitness measurable while gradients concentrate unfloored.
     rollout_floor: float = 0.1
-    # v4: in the concentrated regime (g > 0.5) a rank-leading challenger
-    # donates its actor into the incumbent best slot (TERL's stage-2 overwrite:
-    # the continuously-trained critic and optimizer stay put, so the gradient
-    # budget never lands on a gradient-starved learner) and the two slots swap
-    # fitness histories so exactly one slot ranks top. False recovers v3's
-    # free-moving best_idx (churn: 7-67 redirections/run at g > 0.5).
-    swap_overwrite: bool = True
+    # v5: what the concentrated regime does (the g signal itself is unchanged —
+    # fixed r0.1 concentrates EARLIER than SGSA saturates and goes 5/5 on
+    # Swimmer, so gate timing was never the failure; regime semantics were):
+    #   pinned — TERL stage-2 semantics: rollout/gradient allocation rides the
+    #     DESIGNATED best slot (rank-promoted into the softmax top), the
+    #     designation never moves, and a challenger takes over only by setting
+    #     an all-time fitness record (actor donated into the slot + histories
+    #     swapped). Records are rare on plateaus, so the trained actor runs
+    #     uninterrupted — the property every earlier variant lacked.
+    #   swap   — v4: designation pinned, but overwrite fires on any strict
+    #     window-mean lead (noise-frequency actor churn on plateaus: Swimmer
+    #     overwrote the trained actor every ~2 rounds, 0/5 gait success).
+    #   free   — v3: designation follows the instantaneous rank leader
+    #     (gradient-budget churn onto starved critics: 7-67 moves/run).
+    concentration: str = "pinned"
+    # Hysteretic boundary of the concentrated regime on g: enter above
+    # gate_enter, exit below gate_exit (enter=exit=0.5 recovers the old
+    # memoryless g > 0.5 check, modulo behavior at exactly 0.5).
+    gate_enter: float = 0.6
+    gate_exit: float = 0.4
     episodes_per_round: int = 10  # pop_size + 5, matches TERL's per-round episode cadence
     diversity_states: int = 512
 

@@ -44,13 +44,13 @@ class ATERLTrainer(PopulationTrainerBase):
             [ind.actor for ind in self.pop], states, self.max_action
         )
 
-    def _update_champion(self, i, g):
+    def _update_champion(self, i, concentrated):
         """TERL's champion protocol: in the concentrated regime a new fitness
         record must be confirmed with stable_eval_times noise-free episodes
         (stored in the buffer and counted toward the budget, exactly as in
         TERL stage 2) before the actor overwrites the test individual."""
         cfg, st = self.cfg, self.state
-        if g > 0.5 and cfg.stable_eval_times > 1 and cfg.fitness_eval_times == 1:
+        if concentrated and cfg.stable_eval_times > 1 and cfg.fitness_eval_times == 1:
             stable = 0.0
             for _ in range(cfg.stable_eval_times):
                 stable += self.collect_episode(i, noise=False) / cfg.stable_eval_times
@@ -60,48 +60,62 @@ class ATERLTrainer(PopulationTrainerBase):
         else:
             copy_params(self.pop[i].actor, self.test_individual)
 
-    def _designate_best(self, g):
-        """Best-slot bookkeeping after the round's evaluations.
+    def _record_succession(self, i, concentrated):
+        """Individual i just set an all-time fitness record (TERL's
+        best_f[i] > max_best_f, terl.py:240). In the pinned concentrated
+        regime that — and only that — is when a challenger takes over: its
+        actor is donated into the designated best slot (whose critic and
+        optimizer train continuously) and the two slots swap fitness records
+        so the designated slot ranks top, exactly TERL's stage-2 overwrite.
+        Records are rare on plateaus, so the trained actor is NOT clobbered
+        at noise frequency (v4's swap-on-window-mean-lead overwrote it every
+        ~2 rounds on Swimmer). Returns 1.0 if the takeover fired."""
+        cfg, st = self.cfg, self.state
+        st.max_best_f = self.tracker.personal_best[i]
+        if concentrated and cfg.concentration == "pinned" and i != st.best_idx:
+            copy_params(self.pop[i].actor, self.pop[st.best_idx].actor)
+            self.tracker.swap_slots(i, st.best_idx)
+            return 1.0
+        return 0.0
 
-        Open regime (g <= 0.5): the designation simply follows the rank
-        leader — slots keep their own records and learners.
+    def _designate_best(self, concentrated):
+        """Post-round designation bookkeeping.
 
-        Concentrated regime (g > 0.5): the entire gradient budget rides on
-        best_idx, so *moving* the designation lands it on a learner whose
-        critic was gradient-starved at the floor (v3's best-slot churn:
-        7-67 moves/run at g > 0.5, versus zero in TERL stage 2, where one
-        critic trains continuously and challengers donate actor weights
-        only). So instead of moving, a strictly leading challenger donates
-        its actor into the incumbent slot — critic and optimizer continuity
-        intact — and the two slots swap fitness histories, keeping exactly
-        one top-ranked slot (a copied history would tie the softmax ~0.5/0.5
-        at g=1, defeating the alpha-anneal collapse).
+        Open regime: the designation follows the window-mean rank leader —
+        slots keep their own records and learners (a deliberate deviation
+        from TERL stage 1, which moves best_idx on records).
 
-        The swap trigger is a strict window-mean lead, NOT TERL's all-time-
-        record criterion: at g=1 the allocator's gradient one-hot follows the
-        window-mean rank leader, so refusing a swap while a challenger leads
-        would land the gradient budget on that starved challenger next round
-        anyway. The looser trigger is the price of keeping "rank leader" and
-        "continuously-trained slot" the same slot; population/swap logs the
-        resulting overwrite rate (a documented semantic gap vs TERL stage 2).
+        Concentrated regime, by cfg.concentration:
+          pinned — nothing to do here: the designation is frozen, allocation
+            rides it via rank promotion in the controller, and succession is
+            record-gated in _record_succession (TERL stage-2 semantics).
+            Stale-record lockout (an incumbent decaying below an old record
+            no challenger beats) is TERL's own behavior; the champion
+            protocol protects the reported score.
+          swap   — v4 ablation arm: a strictly window-mean-leading challenger
+            donates its actor into the incumbent slot and histories swap.
+          free   — v3 ablation arm: the designation moves freely (churn
+            redirects the gradient budget onto starved critics).
 
-        Returns 1.0 if a swap-overwrite happened (logged: best_idx alone
-        cannot show swaps precisely because they keep it constant)."""
+        Returns 1.0 if a v4-style swap-overwrite happened."""
         cfg, st = self.cfg, self.state
         means = self.tracker.fitness_means()
         finite = [m if np.isfinite(m) else -np.inf for m in means]
         cand = int(np.argmax(finite))
         if not np.isfinite(finite[cand]) or cand == st.best_idx:
             return 0.0
-        # An incumbent with no finite record cannot anchor a swap (unreachable
-        # with rollout_floor > 0, which evaluates every slot each round; kept
-        # for rollout_floor=0 ablation arms where apportion can starve a slot).
-        if cfg.swap_overwrite and g > 0.5 and np.isfinite(finite[st.best_idx]):
-            if finite[cand] > finite[st.best_idx]:
-                copy_params(self.pop[cand].actor, self.pop[st.best_idx].actor)
-                self.tracker.swap_slots(cand, st.best_idx)
-                return 1.0
-            return 0.0
+        # An incumbent with no finite record cannot anchor pinning or a swap
+        # (unreachable with rollout_floor > 0, which evaluates every slot
+        # each round; kept for rollout_floor=0 ablation arms).
+        if concentrated and np.isfinite(finite[st.best_idx]):
+            if cfg.concentration == "pinned":
+                return 0.0
+            if cfg.concentration == "swap":
+                if finite[cand] > finite[st.best_idx]:
+                    copy_params(self.pop[cand].actor, self.pop[st.best_idx].actor)
+                    self.tracker.swap_slots(cand, st.best_idx)
+                    return 1.0
+                return 0.0
         st.best_idx = cand
         return 0.0
 
@@ -110,8 +124,9 @@ class ATERLTrainer(PopulationTrainerBase):
         st = self.state
 
         diversity = self._diversity()
-        plan = self.controller.plan(self.tracker, self.timesteps, diversity)
+        plan = self.controller.plan(self.tracker, self.timesteps, diversity, st.best_idx)
         best_idx_pre = st.best_idx
+        swaps = 0.0
 
         # -- rollouts: deterministic largest-remainder split of the round's
         # episodes by the (floored) allocation. Multinomial sampling could
@@ -130,10 +145,12 @@ class ATERLTrainer(PopulationTrainerBase):
                     st.last_evo_point[i] = 0
                     self.logger.log({f"fitness/{i}": fitness}, self.timesteps)
                 if self.tracker.personal_best[i] > st.max_best_f:
-                    st.max_best_f = self.tracker.personal_best[i]
-                    self._update_champion(i, plan.g)
+                    # TERL's ordering (terl.py:240-256): succession first,
+                    # champion confirmation second.
+                    swaps += self._record_succession(i, plan.concentrated)
+                    self._update_champion(i, plan.concentrated)
 
-        swapped = self._designate_best(plan.g)
+        swaps += self._designate_best(plan.concentrated)
 
         # -- gradient allocation -----------------------------------------
         round_steps = self.timesteps - steps_before
@@ -158,8 +175,9 @@ class ATERLTrainer(PopulationTrainerBase):
             # built from); post-round population state is logged separately so
             # one record never mixes the two.
             "controller/best_idx": best_idx_pre,
+            "controller/concentrated": float(plan.concentrated),
             "population/best_idx": st.best_idx,
-            "population/swap": swapped,
+            "population/swap": swaps,
         }
         if diversity is not None:
             metrics["controller/diversity"] = diversity
