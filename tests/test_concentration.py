@@ -109,6 +109,29 @@ def test_succession_survives_checkpoint_roundtrip(tmp_path):
         assert params_equal(actor_params(trainer, i), clone.pop[i].actor)
 
 
+def test_interleaved_gradients_preserve_utd(tmp_path):
+    """The gradient budget is applied in per-episode chunks (TERL's cadence,
+    paper Algorithm 1 lines 22-25); total gradient steps per round must still
+    equal the round's env steps exactly (UTD=1, the compute-fairness
+    invariant)."""
+    trainer = make_trainer(tmp_path)
+    counter = {"n": 0}
+    for ind in trainer.pop:
+        orig = ind.train
+
+        def counting(buffer, batch_size, _orig=orig):
+            counter["n"] += 1
+            return _orig(buffer, batch_size)
+
+        ind.train = counting
+    while trainer.buffer.size < trainer.cfg.start_timesteps:
+        trainer.train_round()
+    counter["n"] = 0
+    t0 = trainer.timesteps
+    trainer.train_round()
+    assert counter["n"] == trainer.timesteps - t0 > 0
+
+
 # -- swap (v4) and free (v3) ablation arms ---------------------------------
 
 

@@ -27,8 +27,10 @@ class SGSAController:
 
     One gate g in [0,1] (from the stagnation signal) drives:
       - rollout allocation:   p_i ∝ exp(score_i / tau(g)),
-        tau interpolating tau_max (g=0, near-uniform = TERL stage 1) down to
-        tau_min (g=1, collapse onto best = TERL stage 2)
+        tau interpolating tau_max (g=0: winner-take-most on the blended
+        level+delta rank — TERL stage 1 gives its most-recently-improved
+        individual 6/10 of episodes and gradients, NOT a uniform split)
+        down to tau_min (g=1, collapse onto best = TERL stage 2)
       - gradient allocation:  w_i ∝ p_i ** kappa  (kappa >= 1: steeper, mirrors
         TERL's stage-2 concentration)
       - PSO pull interval:    10 ** (4 - g) learned steps, interpolating TERL's
@@ -132,11 +134,13 @@ class FixedStageController:
     0 -> 1 at ratio * max_timesteps, recovering the schedule's endpoints —
     switch time, PSO intervals (1e4/1e3), stage-2 gradient concentration on
     the designated best slot, and (via the rollout floor) the stage-2
-    6/1/1/1/1 episode split. It is NOT the
-    complete TERL algorithm: the stage-1 extra_idx heuristic (uniform episodes
-    here), per-rollout gradient attribution, and the fitness-eval early break
-    live only in the faithful TERLTrainer port. Basis of the fallback design
-    (adaptive hard switch = this schedule with a stagnation trigger)."""
+    6/1/1/1/1 episode split. It is NOT the complete TERL algorithm: TERL's
+    stage 1 is itself winner-take-most — 6/10 of episodes AND gradients go to
+    the most-recently-improved individual (paper Algorithm 1, line 8), while
+    this arm splits stage 1 uniformly — and per-rollout gradient attribution
+    plus the fitness-eval early break live only in the faithful TERLTrainer
+    port. Basis of the fallback design (adaptive hard switch = this schedule
+    with a stagnation trigger)."""
 
     def __init__(self, cfg):
         self.cfg = cfg

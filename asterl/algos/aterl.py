@@ -88,7 +88,10 @@ class ATERLTrainer(PopulationTrainerBase):
         Concentrated regime, by cfg.concentration:
           pinned — nothing to do here: the designation is frozen, allocation
             rides it via rank promotion in the controller, and succession is
-            record-gated in _record_succession (TERL stage-2 semantics).
+            record-gated in _record_succession (TERL stage-2 semantics; the
+            paper's own rationale, p.5: "Even if other individuals achieve a
+            higher reward, their value networks no longer adapt to their
+            actors due to a long period without updating").
             Stale-record lockout (an incumbent decaying below an old record
             no challenger beats) is TERL's own behavior; the champion
             protocol protects the reported score.
@@ -133,7 +136,7 @@ class ATERLTrainer(PopulationTrainerBase):
         # starve an individual of episodes for many rounds, leaving stale
         # fitness estimates in the ranking.
         episode_counts = apportion(plan.probs, cfg.episodes_per_round)
-        steps_before = self.timesteps
+        last_trained = self.timesteps
         for i in range(cfg.pop_size):
             for _ in range(episode_counts[i]):
                 fitness = self.collect_episode(i, noise=True)
@@ -149,16 +152,21 @@ class ATERLTrainer(PopulationTrainerBase):
                     # champion confirmation second.
                     swaps += self._record_succession(i, plan.concentrated)
                     self._update_champion(i, plan.concentrated)
+                # -- interleaved gradients (paper Algorithm 1, lines 22-25):
+                # TERL trains after EVERY evaluation with that episode's step
+                # count, so later episodes in a round are collected by already-
+                # updated actors. The chunk covers the fitness episode plus any
+                # champion-confirmation episodes it triggered; per-chunk
+                # largest-remainder keeps total gradient steps == env steps
+                # (UTD=1) with no carry state to checkpoint.
+                if self.buffer.size >= cfg.start_timesteps:
+                    chunk = self.timesteps - last_trained
+                    for j, n in enumerate(apportion(plan.grad_weights, chunk)):
+                        for _ in range(n):
+                            self.pop[j].train(self.buffer, cfg.batch_size)
+                last_trained = self.timesteps
 
         swaps += self._designate_best(plan.concentrated)
-
-        # -- gradient allocation -----------------------------------------
-        round_steps = self.timesteps - steps_before
-        if self.buffer.size >= cfg.start_timesteps and round_steps > 0:
-            grad_steps = apportion(plan.grad_weights, round_steps)
-            for i, n in enumerate(grad_steps):
-                for _ in range(n):
-                    self.pop[i].train(self.buffer, cfg.batch_size)
 
         # -- PSO with the gated interval ----------------------------------
         self.pso_step(plan.pso_interval)

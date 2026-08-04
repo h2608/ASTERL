@@ -46,7 +46,12 @@ class Config:
     allocator: str = "softmax"  # softmax | fixed (sw_ucb/exp3 are Phase-4 ablation arms)
     s_max: int = 75_000
     window_k: int = 5
-    tau_max: float = 2.0
+    # TERL's exploration stage is NOT uniform (paper Algorithm 1, line 8): the
+    # most-recently-improved individual gets 6/10 of episodes AND gradients.
+    # tau_max = 0.3 calibrates the g=0 softmax to that winner-take-most share
+    # (raw rollout share ~0.6 for a hot leader; kappa pushes gradients higher);
+    # 2.0 recovers the near-uniform open regime of v1-v5.
+    tau_max: float = 0.3
     # tau_min must make g=1 collapse onto the best individual (TERL stage 2):
     # adjacent-rank logit gap = alpha * 0.25 / tau_min -> ~99.8% at 0.02 for pop 5
     tau_min: float = 0.02

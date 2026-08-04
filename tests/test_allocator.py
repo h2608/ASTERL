@@ -18,15 +18,24 @@ def make_tracker(fitnesses, pop_size=5):
     return tracker
 
 
-def test_softmax_near_uniform_at_g0():
+def test_open_regime_is_winner_take_most():
+    """TERL's stage 1 is not uniform: the most-recently-improved individual
+    gets 6/10 of episodes AND gradients (paper Algorithm 1, line 8). At g=0
+    the softmax generalization must give a hot leader (top level AND top
+    delta rank) a comparable share, with the floor keeping coverage."""
     cfg = Config(pop_size=5)
     ctrl = SGSAController(cfg)
-    tracker = make_tracker([10.0, 20.0, 30.0, 40.0, 50.0])
+    tracker = make_tracker([10.0, 20.0, 30.0, 40.0])
+    tracker.record_eval(4, 40.0, env_steps=4)
+    tracker.record_eval(4, 50.0, env_steps=5)  # improving: top delta too
     tracker.last_improve_step = 0
     plan = ctrl.plan(tracker, env_steps=0, diversity=None, best_idx=4)  # g = 0
     assert plan.g == 0.0
-    # at tau_max the max/min allocation ratio stays below e^(1/tau_max)
-    assert plan.probs.max() / plan.probs.min() <= np.exp(1.0 / cfg.tau_max) + 1e-9
+    # raw rollout share ~0.64 lands at ~0.42 after the floor (TERL: 6/10)
+    assert 0.35 <= plan.probs[4] <= 0.55
+    assert plan.probs.min() >= cfg.rollout_floor - 1e-12
+    # gradient share in TERL-stage-1 territory (kappa sharpens past 6/10)
+    assert 0.55 <= plan.grad_weights[4] <= 0.9
     assert np.isclose(plan.probs.sum(), 1.0)
 
 
