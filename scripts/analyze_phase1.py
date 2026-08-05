@@ -21,6 +21,9 @@ ARMS = [
     ("SGSA4", "aterl-v4"),
     ("SGSA5", "aterl-v5"),
     ("SGSA6", "aterl-v6"),
+    ("t0.6", "aterl-v6-tau0.6"),
+    ("t1.0", "aterl-v6-tau1.0"),
+    ("t2.0", "aterl-v6-tau2.0"),
 ]
 MARKS = [500_000, 1_000_000]
 
